@@ -1,0 +1,66 @@
+image: sprobeph/php-node:latest
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+
+stages:
+  - setup
+  - code_format
+  - test
+
+setup:
+  stage: setup
+  script:
+    - cd src/backend
+    - composer install --no-ansi --no-interaction --no-progress --no-scripts
+  artifacts:
+    expire_in: 1 hour
+    paths:
+      - src/backend/vendor/
+
+backend_lint:
+  stage: code_format
+  dependencies:
+    - setup
+  script:
+    - cd src/backend
+    - vendor/bin/php-cs-fixer fix --config .php_cs.dist.php -v . --dry-run
+
+backend_test:
+  stage: test
+  dependencies:
+    - setup
+  script:
+    - cd src/backend
+    - touch phpunit-report.xml phpunit-coverage.xml
+    - chmod 777 phpunit-report.xml phpunit-coverage.xml
+    - cp .env.example .env
+    - touch database/database.sqlite
+    - sed -i "s/DB_CONNECTION=mysql/DB_CONNECTION=sqlite/g" .env
+    - sed -i "s/DB_HOST=mysql/#DB_HOST=sqlite/g" .env
+    - sed -i "s/DB_PORT=3306/#DB_PORT=sqlite/g" .env
+    - sed -i "s/DB_DATABASE=/#DB_DATABASE=/g" .env
+    - sed -i "s/DB_USERNAME=/#DB_USERNAME=/g" .env
+    - sed -i "s/DB_PASSWORD=/#DB_PASSWORD=/g" .env
+    - sed -i "s/CACHE_DRIVER=redis/CACHE_DRIVER=file/g" .env
+    - php artisan key:generate
+    - php artisan migrate:fresh --seed
+    - php artisan passport:install --force >> output.txt
+    - CLIENT_ID=$(grep 'Client ID\:' output.txt | tail -n 1)
+    - CLIENT_SECRET=$(grep 'Client secret\:' output.txt | tail -n 1)
+    - rm output.txt
+    - CLIENT_ID="$(echo ${CLIENT_ID/Client ID:/""} | tr -d '[:space:]' | perl -pe 's/\x1b\[[0-9;]*[mG]//g')"
+    - CLIENT_SECRET="$(echo ${CLIENT_SECRET/Client secret:/""} | tr -d '[:space:]' | perl -pe 's/\x1b\[[0-9;]*[mG]//g')"
+    - sed -i "s/API_CLIENT_ID=/API_CLIENT_ID=2/g" .env
+    - sed -i "s/API_CLIENT_SECRET=/API_CLIENT_SECRET=$CLIENT_SECRET/g" .env
+    - cat .env
+    - vendor/bin/phpunit --do-not-cache-result --log-junit phpunit-report.xml --coverage-cobertura phpunit-coverage.xml --coverage-text --colors=never
+  artifacts:
+    when: always
+    reports:
+      junit: src/backend/phpunit-report.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: src/backend/phpunit-coverage.xml
+  coverage: '/^\s*Lines:\s*\d+.\d+\%/'
